@@ -1,12 +1,41 @@
 
 function Get-RssAddressJSON {
     $feedPath = Join-Path -Path $env:USERPROFILE -ChildPath 'rssfeed' -AdditionalChildPath 'RssFeed.json'
-    Write-Host $feedPath
+    Write-Verbose $feedPath
     $list = $null
     if ((Test-Path -Path $feedPath)) {
         $list = Get-Content $feedPath | ConvertFrom-Json
     }
     return $list
+}
+
+<#
+.SYNOPSIS
+Retrieves the names of RSS feeds.
+
+.DESCRIPTION
+The Get-RssShows function retrieves the names of RSS feeds by calling the Get-RssAddressJSON function. If no RSS feeds are found, it throws an error.
+
+.PARAMETER None
+
+.INPUTS
+None
+
+.OUTPUTS
+System.String[]
+
+.EXAMPLE
+Get-RssShows
+
+This example retrieves the names of RSS feeds.
+
+#>
+function Get-RssShows {
+    $rssAddress = Get-RssAddressJSON
+    if ([string]::IsNullOrEmpty($rssAddress) ) {
+        Write-Error -Message "No Feeds were found."
+    }
+    $rssAddress.rssfeeds.Name
 }
 
 <#
@@ -52,44 +81,73 @@ function New-RSSJson {
     )
     $feedPath = Join-Path -Path $env:USERPROFILE -ChildPath 'rssfeed' -AdditionalChildPath 'RssFeed.json'
 
-    # Rest of the code...
+    $feed = [PSCustomObject]@{
+        Name        = $Name
+        URI         = $URI
+        Interval    = $Interval
+        Auth        = $Auth
+        Description = "No Description"
+    }
+    
+    $objContent = [PSCustomObject]@{
+        rssfeeds = $feed
+    }
+
+    $json = ConvertTo-Json -InputObject $objContent
+    if (!(Test-Path -Path $feedPath)) {
+        New-Item -Path $feedPath -ItemType File -Force | Out-Null
+    }
+    else {
+        Write-Error -Message "File already exists."
+    }
 }
 
-function Set-RSSAuthToken {
+function Add-RssFeed {
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
         [string]
-        $Auth
-    )
-    $feedPath = Join-Path -Path $env:USERPROFILE -ChildPath 'rssfeed' -AdditionalChildPath 'RssFeed.json'
-    if ((Test-Path -Path $feedPath)) {
-        $data = (Get-Content $feedPath | ConvertFrom-Json)
-        $data.auth = $Auth
-        $data | ConvertTo-Json | Out-File $feedPath -Encoding utf8
-        Write-Verbose -Message "Auth token updated."
-    }
-    else {
-        Write-Error -Message "No rssfeed file found."
-    }
-}
-
-function Set-JSONDescription {
-    param (
+        $Name,
         [Parameter(Mandatory = $true)]
+        [uri]
+        $URI,
+        [Parameter(Mandatory = $false)]
         [string]
-        $Description
+        $Interval = '60 * 60 * 24',
+        [Parameter(Mandatory = $false)]
+        [string]
+        $Auth,
+        [Parameter(Mandatory = $false)]
+        [string]
+        $Description = 'No Description'
     )
     $feedPath = Join-Path -Path $env:USERPROFILE -ChildPath 'rssfeed' -AdditionalChildPath 'RssFeed.json'
-    if ((Test-Path -Path $feedPath)) {
-        $data = (Get-Content $feedPath | ConvertFrom-Json)
-        $data.description = $Description
-        $data | ConvertTo-Json | Out-File $feedPath -Encoding utf8
-        Write-Verbose -Message "Description updated."
-    }
-    else {
-        Write-Error -Message "No rssfeed file found."
+
+    $feed = [PSCustomObject]@{
+        Name        = $Name
+        URI         = $URI
+        Interval    = $Interval
+        Auth        = $Auth
+        Description = $Description
     }
 
+    $objContent = Get-RssAddressJSON
+    if ($objContent) {
+        $objContent.rssfeeds += $feed
+    }
+    else {
+        $objContent = [PSCustomObject]@{
+            rssfeeds = $feed
+        }
+    }
+
+    $json = ConvertTo-Json -InputObject $objContent
+    if (!(Test-Path -Path $feedPath)) {
+        New-Item -Path $feedPath -ItemType File -Force | Out-Null
+    }
+    else {
+        $json | Set-Content -Path $feedPath
+    }
 }
 
 <#
@@ -151,22 +209,27 @@ function Get-RssFeed {
     }
 
     # using Connect-rssuri, connect to the feed, download a xml file and save it to temp\rssfeed\<showname>.xml
-    $uri = ($rssAddress.rss | Where-Object { $_.Name -iMatch $show }).uri
-    Write-Host $uri
+    $show = ($rssAddress.rssfeed | Where-Object { $_.Name -iMatch $show })
+    Write-Verbose -Message ("uri of the show: {0}" -f $uri)
+
+    # if the show auth is null or empty then use the uri, else uri and auth
+    if ([string]::IsNullOrEmpty($show.auth)) {
+        $uri = $show.uri
+    }
+    else{
+        $uri = ("{0}?auth={1}" -f $show.uri, $show.auth)
+    }
 
     $xmlContent = Connect-RssUri -RssUri $uri
     $xml = [xml]$xmlContent
     $rssName = $xml.rss.channel.title
 
     # save to temp folder
-    if(!(Test-Path -Path ("$($env:TEMP)\rssfeed"))){
+    if (!(Test-Path -Path ("$($env:TEMP)\rssfeed"))) {
         New-Item -Path ("$($env:TEMP)\rssfeed") -Type Directory -Force | Out-Null
     }
-    $xmlContent.Save("{0}\rssfeed\{1}\{1}.xml" -f $env:temp,$rssName)
-
+    $xmlContent.Save("{0}\rssfeed\{1}\{1}.xml" -f $env:temp, $rssName)
 }
-
-
 
 <#
 .SYNOPSIS
@@ -280,16 +343,7 @@ function Get-EpisodeDetails {
     Author: [Your Name]
     Date: [Current Date]
 #>
-function Get-Podcast {
-     [CmdletBinding()]
-     param (
-          [Parameter(Mandatory = $true)]
-          [string]
-          $Show
-     )
 
-     # Rest of the code...
-}
 function Get-Podcast {
     [CmdletBinding()]
     param (
@@ -299,15 +353,15 @@ function Get-Podcast {
     )
 
     Write-Host "Requested show: $show" -ForegroundColor Green
-    $rssAddress = Get-RssAddress
-    if ([string]::IsNullOrEmpty($rssAddress) ) {
+    $rssAddress = Get-RssAddressJSON
+    if ($rssAddress.RSSFeeds.Count -eq 0)  {
         Write-Error -Message "No Feeds were found."
 
         #ToDo: add a way to add new rss feeds.
     }
 
-    $uri = ($rssAddress.rss | Where-Object { $_.Name -iMatch $show }).uri
-    Write-Host $uri
+    $uri = ($rssAddress.RSSFeeds | Where-Object { $_.Name -iMatch $show }).url
+    Write-Verbose -Message ("uri of the show: {0}" -f $uri)
 
     $rssFeed = Connect-RssUri -RssUri $uri
 
